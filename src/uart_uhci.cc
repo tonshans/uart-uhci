@@ -1,6 +1,6 @@
 /*
  * UART UHCI DMA Controller Implementation
- * 
+ *
  * 使用预分配缓冲区池的持续接收模式
  */
 
@@ -75,9 +75,9 @@ esp_err_t UartUhci::Init(const Config& config) {
     esp_err_t ret = ESP_OK;
 
     // Validate buffer pool config
-    ESP_RETURN_ON_FALSE(config.rx_pool.buffer_count >= 2, ESP_ERR_INVALID_ARG, kTag, 
+    ESP_RETURN_ON_FALSE(config.rx_pool.buffer_count >= 2, ESP_ERR_INVALID_ARG, kTag,
                         "buffer pool needs at least 2 buffers");
-    ESP_RETURN_ON_FALSE(config.rx_pool.buffer_size > 0, ESP_ERR_INVALID_ARG, kTag, 
+    ESP_RETURN_ON_FALSE(config.rx_pool.buffer_size > 0, ESP_ERR_INVALID_ARG, kTag,
                         "buffer size must be > 0");
 
     uart_port_ = config.uart_port;
@@ -138,7 +138,7 @@ esp_err_t UartUhci::Init(const Config& config) {
     // Initialize RX buffer pool
     ESP_GOTO_ON_ERROR(InitRxBufferPool(config.rx_pool), err, kTag, "failed to initialize RX buffer pool");
 
-    ESP_LOGI(kTag, "UHCI %d initialized (UART %d), RX pool: %d x %d bytes", 
+    ESP_LOGI(kTag, "UHCI %d initialized (UART %d), RX pool: %d x %d bytes",
              uhci_num_, config.uart_port, config.rx_pool.buffer_count, config.rx_pool.buffer_size);
     return ESP_OK;
 
@@ -203,7 +203,15 @@ esp_err_t UartUhci::InitGdma(const Config& config) {
     ESP_RETURN_ON_ERROR(gdma_config_transfer(rx_dma_chan_, &transfer_cfg), kTag, "RX DMA config failed");
 
     // Get RX alignment constraints
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 1, 0)
+    gdma_channel_alignment_info_t rx_align_info = {};
+    ESP_RETURN_ON_ERROR(gdma_get_channel_alignment_constraints(rx_dma_chan_, &rx_align_info),
+        kTag, "Get Rx alignment constraints failed");
+    rx_int_mem_align_ = rx_align_info.int_mem_alignment;
+    rx_ext_mem_align_ = rx_align_info.ext_enc_mem_alignment;
+#else
     gdma_get_alignment_constraints(rx_dma_chan_, &rx_int_mem_align_, &rx_ext_mem_align_);
+#endif
 
     // Create RX DMA link list with buffer pool size and owner checking enabled
     // Each buffer gets one DMA node, owner mechanism manages buffer availability
@@ -264,15 +272,15 @@ esp_err_t UartUhci::InitRxBufferPool(const BufferPoolConfig& config) {
     for (size_t i = 0; i < rx_pool_size_; i++) {
         rx_buffer_pool_[i].data = static_cast<uint8_t*>(
             heap_caps_aligned_alloc(max_align, aligned_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
-        ESP_RETURN_ON_FALSE(rx_buffer_pool_[i].data, ESP_ERR_NO_MEM, kTag, 
+        ESP_RETURN_ON_FALSE(rx_buffer_pool_[i].data, ESP_ERR_NO_MEM, kTag,
                             "failed to allocate buffer %d", i);
-        
+
         rx_buffer_pool_[i].capacity = aligned_size;
         rx_buffer_pool_[i].size = 0;
         rx_buffer_pool_[i].index = i;
     }
 
-    ESP_LOGD(kTag, "RX buffer pool: %d buffers x %d bytes (aligned to %d)", 
+    ESP_LOGD(kTag, "RX buffer pool: %d buffers x %d bytes (aligned to %d)",
              rx_pool_size_, aligned_size, max_align);
 
     return ESP_OK;
@@ -306,14 +314,14 @@ void UartUhci::SetOverflowCallback(OverflowCallback callback, void* user_data) {
 void UartUhci::RemountAndRestartDma(bool flush_uart_fifo) {
     // Re-mount all buffers to DMA link list and restart
     // This is used both for initial start and recovery from overflow
-    
+
     // Optionally flush UART RX FIFO to discard stale/incomplete data
     // This is important after overflow recovery to avoid processing corrupted data
     if (flush_uart_fifo) {
         uart_dev_t *hw = UART_LL_GET_HW(uart_port_);
         uart_ll_rxfifo_rst(hw);
     }
-    
+
     // Called with rx_lock_ held and no consumer leases outstanding. Mount
     // one descriptor at a time: overflow recovery must never allocate in ISR.
     for (size_t i = 0; i < rx_pool_size_; i++) {
